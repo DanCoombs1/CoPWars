@@ -1,4 +1,4 @@
-# Aiimi CoP Code Wars
+# Code Wars
 
 A coding challenge platform for the Aiimi Community of Practice.
 
