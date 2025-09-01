@@ -1,0 +1,1569 @@
+import React, { useState, useEffect, useMemo } from 'react';
+import { initializeApp } from 'firebase/app';
+import { getAuth, onAuthStateChanged, createUserWithEmailAndPassword, signInWithEmailAndPassword, signOut, sendPasswordResetEmail } from 'firebase/auth';
+import { getFirestore, doc, setDoc, getDoc, collection, onSnapshot, runTransaction } from 'firebase/firestore';
+import { Terminal, Trophy, AlertTriangle, Zap, Target, FlaskConical, Play } from 'lucide-react';
+import CustomAvatar from './components/CustomAvatar';
+import Editor from '@monaco-editor/react';
+
+// Helper function to get avatar properties from avatarId
+const getAvatarProperties = (avatarId) => {
+    const avatarOptions = [
+        { skinColor: 0, hairStyle: 0, hairColor: 0, topStyle: 0, topColor: 0 },
+        { skinColor: 1, hairStyle: 1, hairColor: 1, topStyle: 1, topColor: 1 },
+        { skinColor: 2, hairStyle: 2, hairColor: 2, topStyle: 2, topColor: 2 },
+        { skinColor: 3, hairStyle: 3, hairColor: 3, topStyle: 3, topColor: 3 },
+        { skinColor: 4, hairStyle: 4, hairColor: 4, topStyle: 4, topColor: 4 },
+        { skinColor: 5, hairStyle: 5, hairColor: 5, topStyle: 5, topColor: 5 },
+        { skinColor: 6, hairStyle: 6, hairColor: 6, topStyle: 6, topColor: 6 },
+        { skinColor: 7, hairStyle: 7, hairColor: 7, topStyle: 7, topColor: 7 }
+    ];
+    return avatarOptions[avatarId || 0];
+};
+
+// UTF-8 safe base64 helpers for Judge0 payloads
+const encodeBase64 = (input) => {
+    try {
+        const bytes = new TextEncoder().encode(input);
+        let binary = '';
+        bytes.forEach((b) => binary += String.fromCharCode(b));
+        return btoa(binary);
+    } catch (_) {
+        // Fallback for older browsers
+        // eslint-disable-next-line no-undef
+        return btoa(unescape(encodeURIComponent(input)));
+    }
+};
+
+const decodeBase64 = (b64) => {
+    try {
+        const binary = atob(b64);
+        const bytes = Uint8Array.from(binary, (c) => c.charCodeAt(0));
+        return new TextDecoder().decode(bytes);
+    } catch (_) {
+        // Fallback for older browsers
+        // eslint-disable-next-line no-undef
+        return decodeURIComponent(escape(atob(b64)));
+    }
+};
+
+// Function to get starter code for each language
+const getStarterCode = (language) => {
+    const starterCodes = {
+        javascript: `// JavaScript SudokuSolver
+function SudokuSolver() {
+    // Your code here
+    
+}
+
+// Example usage
+console.log(SudokuSolver());`,
+
+        python: `class Solution(object):
+    def firstMissingPositive(self, nums):
+        """
+        :type nums: List[int]
+        :rtype: int
+        """
+        # Your algorithm here
+        pass`,
+
+        java: `class Solution {
+    public int firstMissingPositive(int[] nums) {
+        // Your algorithm here
+        return 1;
+    }
+}`,
+
+        'c++': `#include <vector>
+using namespace std;
+
+class Solution {
+public:
+    int firstMissingPositive(vector<int>& nums) {
+        // Your algorithm here
+        return 1;
+    }
+};`,
+
+        csharp: `public class Solution {
+    public int FirstMissingPositive(int[] nums) {
+        // Your algorithm here
+        return 1;
+    }
+}`,
+
+        sql: `-- This problem is not applicable in SQL
+-- Please select a different language`
+    };
+    
+    return starterCodes[language] || '// Write your code here';
+};
+
+// Generic retry with exponential backoff
+const retryAsync = async (fn, {
+    retries = 3,
+    initialDelayMs = 500,
+    maxDelayMs = 4000,
+    factor = 2
+} = {}) => {
+    let attempt = 0;
+    let delay = initialDelayMs;
+    // eslint-disable-next-line no-constant-condition
+    while (true) {
+        try {
+            return await fn();
+        } catch (error) {
+            attempt++;
+            if (attempt > retries) throw error;
+            await new Promise(r => setTimeout(r, delay));
+            delay = Math.min(maxDelayMs, delay * factor);
+        }
+    }
+};
+
+// --- Firebase Configuration ---
+const firebaseConfig = {
+  apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
+  authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN,
+  projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID,
+  storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET,
+  messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID,
+  appId: import.meta.env.VITE_FIREBASE_APP_ID
+};
+
+// --- Initialise Firebase ---
+const app = initializeApp(firebaseConfig);
+const auth = getAuth(app);
+const db = getFirestore(app);
+const appId = firebaseConfig.projectId || 'default-coding-challenge';
+
+// --- Main App Component ---
+export default function App() {
+    const [view, setView] = useState('challenge'); // 'challenge' or 'leaderboard'
+    const [user, setUser] = useState(null);
+    const [userId, setUserId] = useState(null);
+    const [isAuthReady, setIsAuthReady] = useState(false);
+    const [userData, setUserData] = useState(null);
+    const [showAuth, setShowAuth] = useState(false);
+    const [authMode, setAuthMode] = useState('signin'); // 'signin' or 'signup'
+    const [showAvatarModal, setShowAvatarModal] = useState(false);
+
+    // --- Authentication Effect ---
+    useEffect(() => {
+        let userDocListener = null;
+
+        const authListener = onAuthStateChanged(auth, async (currentUser) => {
+            if (userDocListener) userDocListener();
+
+            if (currentUser) {
+                const currentUserId = currentUser.uid;
+                setUser(currentUser);
+                setUserId(currentUserId);
+
+                const userDocRef = doc(db, `/artifacts/${appId}/public/data/users/${currentUserId}`);
+                userDocListener = onSnapshot(userDocRef, async (userDocSnap) => {
+                    if (!userDocSnap.exists()) {
+                        try {
+                            await setDoc(userDocRef, {
+                                userId: currentUserId,
+                                displayName: `Agent-${currentUserId.substring(0, 6)}`,
+                                totalScore: 0,
+                                avatarId: 0,
+                            });
+                        } catch (e) { console.error("Failed to create user profile:", e); }
+                    } else {
+                        setUserData(userDocSnap.data());
+                    }
+                    setIsAuthReady(true);
+                }, (error) => {
+                    console.error("Firestore user listener error:", error);
+                    setIsAuthReady(true);
+                });
+
+            } else {
+                setIsAuthReady(true);
+                setUserData(null);
+                setShowAuth(true);
+            }
+        });
+
+        return () => {
+            authListener();
+            if (userDocListener) userDocListener();
+        };
+    }, []);
+
+    if (!isAuthReady) {
+        return (
+            <div className="flex items-center justify-center h-screen bg-black text-green-400 font-mono">
+                <div className="flex flex-col items-center">
+                    <Zap className="w-16 h-16 text-yellow-400 animate-pulse" />
+                    <p className="mt-4 text-xl tracking-widest">CONNECTING TO THE GRID...</p>
+                </div>
+            </div>
+        );
+    }
+
+    if (showAuth) {
+        return (
+            <AuthView 
+                authMode={authMode} 
+                setAuthMode={setAuthMode} 
+                setShowAuth={setShowAuth}
+                setUserData={setUserData}
+            />
+        );
+    }
+
+    if (!userData) {
+        return (
+            <div className="flex items-center justify-center h-screen bg-black text-green-400 font-mono">
+                <div className="flex flex-col items-center">
+                    <Zap className="w-16 h-16 text-yellow-400 animate-pulse" />
+                    <p className="mt-4 text-xl tracking-widest">LOADING USER PROFILE...</p>
+                </div>
+            </div>
+        );
+    }
+
+    return (
+        <div className="bg-[#1a103c] text-gray-100 min-h-screen font-mono" style={{'--glow-color': '#f0f', '--glow-color-alt': '#0ff'}}>
+            <Header userData={userData} setView={setView} setShowAvatarModal={setShowAvatarModal} />
+            <main className="p-4 sm:p-6 md:p-8">
+                <div className={view === 'challenge' ? 'block' : 'hidden'}>
+                    <ChallengeView userId={userId} />
+                </div>
+                <div className={view === 'leaderboard' ? 'block' : 'hidden'}>
+                    <LeaderboardView />
+                </div>
+            </main>
+            <Footer />
+            {showAvatarModal && (
+                <AvatarModal 
+                    userData={userData} 
+                    setShowAvatarModal={setShowAvatarModal}
+                    setUserData={setUserData}
+                />
+            )}
+        </div>
+    );
+}
+
+// --- Header Component ---
+function Header({ userData, setView, setShowAvatarModal }) {
+    const handleSignOut = async () => {
+        try {
+            await signOut(auth);
+        } catch (error) {
+            console.error("Sign out failed:", error);
+        }
+    };
+
+    const handleAvatarClick = () => {
+        setShowAvatarModal(true);
+    };
+
+    return (
+        <header className="bg-[#1a103c]/80 backdrop-blur-sm sticky top-0 z-10 border-b-2 border-[var(--glow-color)] shadow-[0_0_15px_var(--glow-color)]">
+            <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+                <div className="flex items-center justify-between h-20">
+                    <div className="flex items-center space-x-4">
+                        <Terminal className="w-10 h-10 text-cyan-400" />
+                        <h1 className="text-3xl font-bold text-white hidden sm:block tracking-wider" style={{ textShadow: '0 0 5px var(--glow-color-alt)'}}>Aiimi CoP Wars</h1>
+                    </div>
+                    <div className="flex items-center space-x-6">
+                        <nav className="flex space-x-2">
+                            <button onClick={() => setView('challenge')} className="px-4 py-2 rounded-md text-sm font-bold text-cyan-300 hover:bg-cyan-900/50 hover:text-white transition-all">Challenge</button>
+                            <button onClick={() => setView('leaderboard')} className="px-4 py-2 rounded-md text-sm font-bold text-pink-300 hover:bg-pink-900/50 hover:text-white transition-all">Leaderboard</button>
+                        </nav>
+                        <div className="flex items-center space-x-3 border-l-2 border-pink-500/50 pl-6">
+                            <div className="flex-shrink-0">
+                                <button 
+                                    onClick={handleAvatarClick}
+                                    className="group relative"
+                                >
+                                    <CustomAvatar
+                                        {...getAvatarProperties(userData.avatarId)}
+                                        size={48}
+                                    />
+                                    <div className="absolute inset-0 rounded-full bg-black/50 opacity-0 group-hover:opacity-100 transition-opacity duration-200 flex items-center justify-center">
+                                        <span className="text-xs text-white font-bold">EDIT</span>
+                                    </div>
+                                </button>
+                            </div>
+                            <div>
+                                <div className="text-sm font-bold text-white">{userData.displayName}</div>
+                                <div className="text-xs font-medium text-yellow-400">Total Score: {userData.totalScore}</div>
+                            </div>
+                            <button 
+                                onClick={handleSignOut}
+                                className="ml-4 px-3 py-1 text-xs font-bold text-red-300 hover:bg-red-900/50 hover:text-white transition-all rounded border border-red-500/50"
+                            >
+                                Sign Out
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </header>
+    );
+}
+
+// --- Challenge View Component ---
+function ChallengeView({ userId }) {
+    const [challenge, setChallenge] = useState(null);
+    const [language, setLanguage] = useState('python');
+    const [code, setCode] = useState(getStarterCode('python'));
+    const [results, setResults] = useState(null);
+    const [isLoading, setIsLoading] = useState(false);
+    const [error, setError] = useState(null);
+    const [personalBest, setPersonalBest] = useState(null);
+    const [consoleOutput, setConsoleOutput] = useState('');
+    const [testPassed, setTestPassed] = useState(false);
+    const [hasLoadedFromStorage, setHasLoadedFromStorage] = useState(false);
+    // Judge0 API Configuration
+    const JUDGE0_API_KEY = "78b01fde66mshe4f92d1ef33db6bp1ad9e5jsn5c7342461a01";
+    const JUDGE0_API_HOST = "judge0-ce.p.rapidapi.com";
+
+    const getMonacoLanguage = (lang) => {
+        switch (lang) {
+            case 'python': return 'python';
+            case 'java': return 'java';
+            case 'c++': return 'cpp';
+            case 'csharp': return 'csharp';
+            case 'sql': return 'sql';
+            default: return 'python';
+        }
+    };
+
+    const challengeId = useMemo(() => {
+        const d = new Date();
+        return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+    }, []);
+
+    useEffect(() => {
+        const challengeDocRef = doc(db, `/artifacts/${appId}/public/data/challenges/${challengeId}`);
+        const unsubscribe = onSnapshot(challengeDocRef, (docSnap) => {
+            if (docSnap.exists()) {
+                const challengeData = docSnap.data();
+                setChallenge(challengeData);
+            } else {
+                setChallenge({ title: "Awaiting New Challenge...", description: "Please come back at a later date (or go and pester Dan).", testCases: [] });
+            }
+        });
+        return () => unsubscribe();
+    }, [challengeId, language]);
+
+    useEffect(() => {
+        if (!userId || !challengeId) return;
+        const bestScoreDocRef = doc(db, `/artifacts/${appId}/users/${userId}/bestScores/${challengeId}`);
+        const unsubscribe = onSnapshot(bestScoreDocRef, (docSnap) => {
+            setPersonalBest(docSnap.exists() ? docSnap.data() : null);
+        });
+        return () => unsubscribe();
+    }, [userId, challengeId]);
+
+    // Save code to localStorage whenever it changes
+    useEffect(() => {
+        if (userId && challengeId && code.trim() !== '') {
+            try {
+                localStorage.setItem(`code_${userId}_${challengeId}_${language}`, code);
+                console.log('Saved code to localStorage:', { userId, challengeId, language, codeLength: code.length });
+            } catch (error) {
+                console.error('Error saving code to localStorage:', error);
+            }
+        }
+    }, [code, userId, challengeId, language]);
+
+    // Save language preference to localStorage whenever it changes
+    useEffect(() => {
+        if (userId && challengeId) {
+            try {
+                localStorage.setItem(`language_${userId}_${challengeId}`, language);
+                console.log('Saved language to localStorage:', { userId, challengeId, language });
+            } catch (error) {
+                console.error('Error saving language to localStorage:', error);
+            }
+        }
+    }, [language, userId, challengeId]);
+
+    // Save test results and submission state to localStorage
+    useEffect(() => {
+        if (userId && challengeId && results) {
+            try {
+                const testData = {
+                    testPassed: testPassed,
+                    results: results,
+                    timestamp: new Date().toISOString()
+                };
+                localStorage.setItem(`testResults_${userId}_${challengeId}`, JSON.stringify(testData));
+                console.log('Saved test results to localStorage:', { userId, challengeId, testPassed });
+            } catch (error) {
+                console.error('Error saving test results to localStorage:', error);
+            }
+        }
+    }, [testPassed, results, userId, challengeId]);
+
+    // Reset storage loading flag when challengeId changes (new month)
+    useEffect(() => {
+        setHasLoadedFromStorage(false);
+    }, [challengeId]);
+
+    // Test localStorage on mount
+    useEffect(() => {
+        try {
+            localStorage.setItem('test_storage', 'working');
+            const testValue = localStorage.getItem('test_storage');
+            console.log('localStorage test:', testValue === 'working' ? 'PASSED' : 'FAILED');
+        } catch (error) {
+            console.error('localStorage test FAILED:', error);
+        }
+    }, []);
+
+    // Load saved code and language from localStorage on mount (only once)
+    useEffect(() => {
+        if (userId && challengeId && !hasLoadedFromStorage) {
+            try {
+                const savedLanguage = localStorage.getItem(`language_${userId}_${challengeId}`);
+                
+                console.log('Loading from localStorage:', { userId, challengeId, savedLanguage });
+                
+                let finalLanguage = language;
+                if (savedLanguage !== null) {
+                    finalLanguage = savedLanguage;
+                    setLanguage(savedLanguage);
+                    console.log('Restored saved language preference');
+                }
+                
+                // Load code for the final language (either saved or default)
+                const savedCode = localStorage.getItem(`code_${userId}_${challengeId}_${finalLanguage}`);
+                if (savedCode !== null && savedCode.trim() !== '') {
+                    setCode(savedCode);
+                    console.log('Restored saved code from localStorage:', savedCode.substring(0, 50) + (savedCode.length > 50 ? '...' : ''));
+                } else {
+                    setCode(getStarterCode(finalLanguage));
+                    console.log('No saved code found, loading starter code for:', finalLanguage);
+                }
+
+                // Load test results
+                const savedTestResults = localStorage.getItem(`testResults_${userId}_${challengeId}`);
+                if (savedTestResults !== null) {
+                    try {
+                        const testData = JSON.parse(savedTestResults);
+                        setTestPassed(testData.testPassed);
+                        setResults(testData.results);
+                        console.log('Restored test results from localStorage:', { testPassed: testData.testPassed });
+                    } catch (error) {
+                        console.error('Error parsing saved test results:', error);
+                    }
+                }
+                
+                setHasLoadedFromStorage(true);
+            } catch (error) {
+                console.error('Error loading from localStorage:', error);
+                setHasLoadedFromStorage(true);
+            }
+        }
+    }, [userId, challengeId, hasLoadedFromStorage]);
+
+    const calculateScore = (time, memory, allTestsPassed, code = '') => {
+        if (!allTestsPassed) return 0;
+        
+        // Realistic performance-based scoring system for developers
+        // Target: good optimized code ~800 points, inefficient code ~400 points
+        
+        // Time scoring (600 points max) - highly sensitive to small time differences
+        // Every 0.01s difference = significant score impact
+        let timeScore;
+        const baseTime = 1.0; // Reference time
+        
+        if (time <= baseTime) {
+            // Give bonus for being faster than 1.0s
+            const bonus = (baseTime - time) * 1000; // 1000 points per second saved
+            timeScore = Math.min(600, 400 + bonus);
+        } else {
+            // Heavy penalty for being slower than 1.0s
+            const penalty = (time - baseTime) * 2000; // 2000 points per second over
+            timeScore = Math.max(50, 400 - penalty);
+        }
+        
+        // Memory scoring (200 points max)
+        // Excellent: <50MB = full points
+        // Good: 50-60MB = scaled down  
+        // Poor: >60MB = heavy penalty
+        const memoryMB = memory / 1024; // Convert KB to MB
+        let memoryScore;
+        if (memoryMB <= 50) {
+            memoryScore = 200;
+        } else if (memoryMB <= 60) {
+            // Linear decrease from 200 to 100 between 50MB and 60MB
+            memoryScore = 200 - ((memoryMB - 50) / 10) * 100;
+        } else if (memoryMB <= 80) {
+            // Linear decrease from 100 to 50 between 60MB and 80MB
+            memoryScore = 100 - ((memoryMB - 60) / 20) * 50;
+        } else {
+            // High memory usage gets minimal points
+            memoryScore = Math.max(10, 50 - (memoryMB - 80) * 2);
+        }
+        
+        const finalScore = Math.max(0, Math.min(1000, Math.round(timeScore + memoryScore)));
+        return finalScore;
+    };
+
+    // Helper function to map language names to Judge0 language IDs
+    const getLanguageId = (language) => {
+        switch (language.toLowerCase()) {
+            case 'python': return 92;     // Python 3
+            case 'java': return 91;       // Java
+            case 'c++': return 54;        // C++ (GCC)
+            case 'csharp': return 51;     // C#
+            case 'sql': return 82;        // SQL (SQLite)
+            default: return 92;           // Default to Python
+        }
+    };
+
+    const runCodeExecution = async () => {
+        if (!challenge || !challenge.testCases || challenge.testCases.length === 0) return null;
+        setIsLoading(true);
+        setResults(null);
+        setError(null);
+
+        try {
+            // Use our backend instead of calling Judge0 directly
+            const response = await fetch('http://localhost:8000/execute', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    language: language,
+                    code: code,
+                    testCases: challenge.testCases
+                })
+            });
+
+            if (!response.ok) {
+                throw new Error(`Backend error: ${response.status}`);
+            }
+
+            const result = await response.json();
+
+            if (result.error) {
+                throw new Error(result.error);
+            }
+
+            // Process results from backend
+            const allPassed = result.allTestsPassed;
+            const score = calculateScore(result.time || 0, result.memory || 0, allPassed, code);
+            
+            const testResults = challenge.testCases.map(tc => ({
+                name: tc.name,
+                passed: allPassed,
+                executionTime: ((result.time || 0) * 1000).toFixed(2)
+            }));
+
+            return {
+                testResults,
+                score,
+                totalExecutionTime: (result.time || 0) * 1000,
+                memory: result.memory || 0,
+                allTestsPassed: allPassed,
+                actualOutput: result.actualOutput || '',
+                expectedOutput: result.expectedOutput || '',
+                errorMessage: result.errorMessage || ''
+            };
+
+        } catch (e) {
+            console.error('Execution error:', e);
+            setError(e.message || 'An unknown error occurred during execution');
+            return null;
+        } finally {
+            setIsLoading(false);
+        }
+    };
+
+    const handleRun = async () => {
+        if (!code.trim()) {
+            setConsoleOutput('Error: No code to execute');
+            return;
+        }
+
+        setIsLoading(true);
+        setError(null);
+        setConsoleOutput('');
+
+        try {
+            // Use our backend for console runs too (empty test cases)
+            const response = await fetch('http://localhost:8000/execute', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    language: language,
+                    code: code,
+                    testCases: [] // Empty for console runs
+                })
+            });
+
+            if (!response.ok) {
+                throw new Error(`Backend error: ${response.status}`);
+            }
+
+            const result = await response.json();
+
+            if (result.error) {
+                setConsoleOutput(`Error:\n${result.error}`);
+            } else if (result.actualOutput) {
+                setConsoleOutput(`Output:\n${result.actualOutput}`);
+            } else {
+                setConsoleOutput('Code executed successfully (no output)');
+            }
+
+        } catch (e) {
+            setConsoleOutput(`Error: ${e.message}`);
+        } finally {
+            setIsLoading(false);
+        }
+    };
+    
+    const handleTest = async () => {
+        const executionResult = await runCodeExecution();
+        if (executionResult) {
+            setResults(executionResult);
+            setTestPassed(executionResult.allTestsPassed);
+        }
+    };
+
+    const handleSubmit = async () => {
+        try {
+        const executionResult = await runCodeExecution();
+        if (executionResult) {
+            setResults(executionResult);
+                if (executionResult.allTestsPassed) {
+                await updateUserScore(executionResult.score, executionResult.totalExecutionTime, executionResult.memory);
+                    setError(null); // Clear any previous errors
+            } else {
+                setError("Submission failed. All tests must pass to submit to the leaderboard.");
+            }
+            }
+        } catch (error) {
+            console.error('Submit error:', error);
+            setError(`Submission failed: ${error.message}`);
+        }
+    };
+
+    const updateUserScore = async (newScore, executionTime, memory) => {
+        const submissionId = new Date().toISOString();
+        const submissionDocRef = doc(db, `/artifacts/${appId}/users/${userId}/submissions/${challengeId}-${submissionId}`);
+        const userDocRef = doc(db, `/artifacts/${appId}/public/data/users/${userId}`);
+
+        try {
+            await runTransaction(db, async (transaction) => {
+                const userBestScoreDocRef = doc(db, `/artifacts/${appId}/users/${userId}/bestScores/${challengeId}`);
+                const bestScoreSnap = await transaction.get(userBestScoreDocRef);
+                const userDocSnap = await transaction.get(userDocRef);
+                
+                // Handle case where user document doesn't exist
+                let userData = {};
+                if (userDocSnap.exists()) {
+                    userData = userDocSnap.data();
+                }
+                
+                const previousBest = bestScoreSnap.exists() ? bestScoreSnap.data().score : 0;
+                let scoreDifference = 0;
+                
+                if (newScore > previousBest) {
+                    // Save best score with user info
+                    transaction.set(userBestScoreDocRef, { 
+                        score: newScore, 
+                        time: executionTime, 
+                        memory: memory, 
+                        submittedAt: new Date(),
+                        displayName: userData?.displayName || `Agent-${userId.substring(0, 6)}`,
+                        avatarId: userData?.avatarId || 0
+                    });
+                    scoreDifference = newScore - previousBest;
+                }
+                
+                transaction.set(submissionDocRef, { code, score: newScore, challengeId, submittedAt: new Date(), language });
+                
+                if (scoreDifference > 0) {
+                    const currentTotal = userData?.totalScore || 0;
+                    transaction.update(userDocRef, { totalScore: currentTotal + scoreDifference });
+                }
+            });
+        } catch (e) {
+            console.error("Transaction failed: ", e);
+            throw new Error(`Could not save score: ${e.message}`);
+        }
+    };
+
+    if (!challenge) return <div className="text-center p-8">Receiving transmission...</div>;
+
+    return (
+        <div className="max-w-7xl mx-auto">
+            {/* Top Row: Challenge Description and Info Boxes */}
+            <div className="grid grid-cols-1 lg:grid-cols-5 gap-6 mb-6">
+                <div className="lg:col-span-3 bg-black/30 p-6 rounded-lg shadow-lg border-2 border-pink-500/50">
+                <h2 className="text-3xl font-bold text-pink-400 mb-4 tracking-wide" style={{ textShadow: '0 0 5px var(--glow-color)'}}>{challenge.title}</h2>
+                <p className="text-gray-300 whitespace-pre-wrap leading-relaxed">{challenge.description}</p>
+            </div>
+            <div className="lg:col-span-2 flex flex-col space-y-6">
+                <div className="bg-black/30 p-4 rounded-lg shadow-lg border-2 border-yellow-500/50">
+                    <h3 className="text-xl font-bold text-yellow-400 mb-3 flex items-center"><Trophy className="w-5 h-5 mr-2" /> Personal Best</h3>
+                        <div className="flex justify-around text-center text-sm">
+                            <div><p className="font-bold text-lg text-yellow-300">{personalBest?.score || 0}</p><p className="text-gray-400">Score</p></div>
+                            <div><p className="font-bold text-lg text-yellow-300">{(personalBest?.time || 0).toFixed(2)}ms</p><p className="text-gray-400">Time</p></div>
+                            <div><p className="font-bold text-lg text-yellow-300">{((personalBest?.memory || 0) / 1024).toFixed(2)}MB</p><p className="text-gray-400">Memory</p></div>
+                        </div>
+                </div>
+                <div className="bg-black/30 p-4 rounded-lg shadow-lg border-2 border-cyan-500/50">
+                    <h3 className="text-xl font-bold text-cyan-400 mb-3 flex items-center"><Target className="w-5 h-5 mr-2" /> Test Cases</h3>
+                    <ul className="space-y-2 text-sm">
+                        {(challenge.testCases.length > 0) ? challenge.testCases.map((test, index) => (
+                                <li key={index} className="text-gray-300">
+                                    <div className="font-semibold text-cyan-300">{`> ${test.name}`}</div>
+                                    <div className="ml-4 text-xs text-gray-400">
+                                        <span className="text-yellow-400">Input:</span> <code className="bg-gray-800 px-1 rounded">"{test.input}"</code> | 
+                                        <span className="text-green-400"> Expected:</span> <code className="bg-gray-800 px-1 rounded">"{test.expectedOutput}"</code>
+                                    </div>
+                                </li>
+                        )) : <li className="text-gray-500">{`> No test cases loaded.`}</li>}
+                    </ul>
+                </div>
+                    
+                    {/* Test and Submit Buttons - Directly under test cases */}
+                    <div className="flex flex-col space-y-4">
+                        <button 
+                            onClick={handleTest}
+                            disabled={isLoading}
+                            className="bg-cyan-500 hover:bg-cyan-600 text-white font-bold py-3 px-4 rounded-lg transition-all duration-200 flex items-center justify-center space-x-2 disabled:opacity-50 disabled:cursor-not-allowed"
+                        >
+                            <FlaskConical className="w-5 h-5" />
+                            <span>Test Against Challenge</span>
+                        </button>
+                        <button 
+                            onClick={handleSubmit}
+                            disabled={isLoading || !testPassed}
+                            className={`font-bold py-3 px-4 rounded-lg transition-all duration-200 flex items-center justify-center space-x-2 ${
+                                testPassed 
+                                    ? 'bg-green-500 text-white hover:bg-green-600 shadow-[0_0_10px_#0f0]' 
+                                    : 'bg-gray-600 text-gray-400 cursor-not-allowed'
+                            }`}
+                        >
+                            {isLoading ? (
+                                <>
+                                    <svg className="animate-spin h-5 w-5" viewBox="0 0 24 24">
+                                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
+                                    </svg>
+                                    <span>Submitting...</span>
+                                </>
+                            ) : (
+                                <>
+                                    <Trophy className="w-5 h-5" />
+                                    <span>Submit to Leaderboard</span>
+                                </>
+                            )}
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            {/* IDE and Console Row */}
+            <div className="flex space-x-6">
+                {/* Code Editor */}
+                <div className="flex-1 bg-black/30 rounded-lg shadow-lg border-2 border-cyan-500/50 overflow-hidden">
+                    <div className="ide-header flex justify-between items-center p-3">
+                        <div className="flex items-center space-x-3">
+                            <div className="flex space-x-1">
+                                <div className="terminal-button red"></div>
+                                <div className="terminal-button yellow"></div>
+                                <div className="terminal-button green"></div>
+                            </div>
+                            <span className="text-sm font-mono text-gray-300">Code Editor</span>
+                        </div>
+                        <select value={language} onChange={e => {
+                            const newLanguage = e.target.value;
+                            setLanguage(newLanguage);
+                            
+                            // Check if there's saved code for this language before falling back to starter code
+                            try {
+                                const savedCodeForLanguage = localStorage.getItem(`code_${userId}_${challengeId}_${newLanguage}`);
+                                if (savedCodeForLanguage && savedCodeForLanguage.trim() !== '') {
+                                    setCode(savedCodeForLanguage);
+                                    console.log('Restored saved code for language:', newLanguage);
+                                } else {
+                                    setCode(getStarterCode(newLanguage));
+                                    console.log('No saved code for language, using starter code:', newLanguage);
+                                }
+                            } catch (error) {
+                                console.error('Error loading saved code for language:', error);
+                                setCode(getStarterCode(newLanguage));
+                            }
+                        }} className="bg-gray-800 border border-gray-600 rounded-md px-3 py-1 text-sm font-mono text-gray-300 focus:outline-none focus:border-cyan-400">
+                            <option value="javascript">JavaScript</option>
+                            <option value="python">Python</option>
+                            <option value="java">Java</option>
+                            <option value="c++">C++</option>
+                            <option value="csharp">C#</option>
+                            <option value="sql">SQL</option>
+                        </select>
+                     </div>
+                    <div className="h-80">
+                        <Editor
+                            height="100%"
+                            defaultLanguage="python"
+                            language={getMonacoLanguage(language)}
+                            value={code}
+                            onChange={(value) => setCode(value || '')}
+                            theme="vs-dark"
+                            options={{
+                                minimap: { enabled: false },
+                                fontSize: 14,
+                                fontFamily: 'Consolas, Monaco, "Courier New", monospace',
+                                lineNumbers: 'on',
+                                roundedSelection: false,
+                                scrollBeyondLastLine: false,
+                                automaticLayout: true,
+                                wordWrap: 'on',
+                                suggestOnTriggerCharacters: true,
+                                quickSuggestions: true,
+                                parameterHints: { enabled: true },
+                                hover: { enabled: true },
+                                contextmenu: true,
+                                folding: true,
+                                lineDecorationsWidth: 0,
+                                lineNumbersMinChars: 3,
+                                glyphMargin: false,
+                                foldingStrategy: 'indentation',
+                                showFoldingControls: 'always',
+                                matchBrackets: 'always',
+                                autoClosingBrackets: 'always',
+                                autoClosingQuotes: 'always',
+                                autoClosingOvertype: 'always',
+                                autoSurround: 'quotes',
+                                tabSize: 4,
+                                insertSpaces: true,
+                                detectIndentation: false,
+                                trimAutoWhitespace: true,
+                                largeFileOptimizations: true,
+                                scrollbar: {
+                                    vertical: 'visible',
+                                    horizontal: 'visible',
+                                    verticalScrollbarSize: 10,
+                                    horizontalScrollbarSize: 10
+                                }
+                            }}
+                            placeholder="// Write your code here..."
+                        />
+                </div>
+                </div>
+
+                {/* Console/Terminal Output */}
+                <div className="flex-1 bg-black/30 rounded-lg shadow-lg border-2 border-green-500/50 overflow-hidden">
+                    <div className="ide-header flex justify-between items-center p-3">
+                        <div className="flex items-center space-x-3">
+                            <div className="flex space-x-1">
+                                <div className="terminal-button red"></div>
+                                <div className="terminal-button yellow"></div>
+                                <div className="terminal-button green"></div>
+                            </div>
+                            <span className="text-sm font-mono text-gray-300">Console Output</span>
+                        </div>
+                        <button 
+                            onClick={handleRun}
+                            disabled={isLoading || !code.trim()}
+                            className="bg-green-600 hover:bg-green-700 text-white px-3 py-1 rounded text-sm font-mono transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center space-x-2"
+                        >
+                            <Play className="w-4 h-4" />
+                            <span>Run</span>
+                    </button>
+                </div>
+                    <div className="h-80 bg-black text-white p-4 font-mono text-sm overflow-y-auto">
+                        {consoleOutput ? (
+                            <pre className="whitespace-pre-wrap">{consoleOutput}</pre>
+                        ) : (
+                            <div className="text-gray-500">// Console output will appear here...</div>
+                        )}
+                    </div>
+                </div>
+            </div>
+
+            {/* Error Messages */}
+                {error && (
+                 <div className="bg-red-900/50 border border-red-500 text-red-200 p-4 rounded-lg">
+                    <div className="flex items-start space-x-3 mb-3">
+                        <AlertTriangle className="w-5 h-5 mt-1 text-red-400 flex-shrink-0"/>
+                        <div>
+                            <h4 className="font-bold text-lg">Execution Error</h4>
+                            <p className="text-sm text-red-300">{error}</p>
+                        </div>
+                    </div>
+                    <div className="bg-red-950/50 border border-red-600 p-3 rounded-md">
+                        <p className="text-xs text-red-200 font-mono whitespace-pre-wrap">{error}</p>
+                    </div>
+                    </div>
+                )}
+
+            {/* Test Results */}
+                {results && (
+                <div className="bg-black/30 p-4 rounded-lg shadow-lg border border-gray-700">
+                    <h3 className="text-lg font-bold mb-3 text-green-400 flex items-center">
+                        <FlaskConical className="w-4 h-4 mr-2" />
+                        Test Results
+                    </h3>
+                    
+                    {testPassed && (
+                        <div className="bg-green-900/20 border border-green-500/30 p-3 rounded-lg mb-4">
+                            <div className="flex items-center space-x-2">
+                                <div className="w-6 h-6 bg-green-500 rounded-full flex items-center justify-center">
+                                    <svg className="w-4 h-4 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                                    </svg>
+                        </div>
+                                <div>
+                                    <h4 className="text-sm font-bold text-green-400">All Tests Passed!</h4>
+                                    <p className="text-xs text-green-300">Ready to submit to leaderboard.</p>
+                                </div>
+                            </div>
+                        </div>
+                    )}
+                    
+                    {results.errorMessage && (
+                        <div className="bg-red-900/50 border border-red-500 text-red-200 p-3 rounded-md mb-4">
+                            <h4 className="font-bold mb-2 flex items-center text-sm">
+                                <AlertTriangle className="w-4 h-4 mr-2" />
+                                Execution Error:
+                            </h4>
+                            <div className="bg-red-950/50 border border-red-600 p-2 rounded-md">
+                                <p className="text-xs font-mono whitespace-pre-wrap">{results.errorMessage}</p>
+                            </div>
+                        </div>
+                    )}
+                    
+                    <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+                        {/* Key Metrics - Left Side */}
+                        <div className="lg:col-span-1 space-y-3">
+                            <div className="bg-green-900/20 border border-green-500/30 p-3 rounded-lg text-center">
+                                <p className="text-2xl font-bold text-green-400">{results.score}</p>
+                                <p className="text-xs text-gray-400">Score</p>
+                            </div>
+                            <div className="bg-cyan-900/20 border border-cyan-500/30 p-3 rounded-lg text-center">
+                                <p className="text-2xl font-bold text-cyan-400">{results.testResults.filter(r => r.passed).length}/{results.testResults.length}</p>
+                                <p className="text-xs text-gray-400">Tests Passed</p>
+                            </div>
+                            <div className="bg-pink-900/20 border border-pink-500/30 p-3 rounded-lg text-center">
+                                <p className="text-2xl font-bold text-pink-400">{(results.totalExecutionTime || 0).toFixed(2)}<span className="text-sm">ms</span></p>
+                                <p className="text-xs text-gray-400">Time</p>
+                            </div>
+                        </div>
+                        
+                        {/* Test Results - Right Side */}
+                        <div className="lg:col-span-2">
+                            <div className="bg-gray-800/30 border border-gray-600 p-3 rounded-md">
+                                <h4 className="font-bold mb-2 text-gray-300 text-sm">Test Cases:</h4>
+                                <div className="space-y-1">
+                            {results.testResults.map((result, index) => (
+                                        <div key={index} className={`flex items-center justify-between p-2 rounded-md text-sm ${result.passed ? 'bg-green-900/30 border border-green-500/30' : 'bg-red-900/30 border border-red-500/30'}`}>
+                                            <div className="flex items-center space-x-2">
+                                                <span className="font-medium text-gray-200">{result.name}</span>
+                                                {result.executionTime && (
+                                                    <span className="text-xs text-gray-400">({result.executionTime}ms)</span>
+                                                )}
+                    </div>
+                                            <div className="flex items-center space-x-1">
+                                                {result.passed ? (
+                                                    <>
+                                                        <div className="w-2 h-2 bg-green-400 rounded-full"></div>
+                                                        <span className="text-xs text-green-300 font-bold">PASS</span>
+                                                    </>
+                                                ) : (
+                                                    <>
+                                                        <div className="w-2 h-2 bg-red-400 rounded-full"></div>
+                                                        <span className="text-xs text-red-300 font-bold">FAIL</span>
+                                                    </>
+                )}
+            </div>
+                                        </div>
+                                    ))}
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            )}
+        </div>
+    );
+}
+
+// --- Leaderboard View Component ---
+function LeaderboardView() {
+    const [currentMonthUsers, setCurrentMonthUsers] = useState([]);
+    const [monthlyWinners, setMonthlyWinners] = useState([]);
+    const [loading, setLoading] = useState(true);
+    const [view, setView] = useState('current'); // 'current' or 'history'
+
+    const currentMonth = useMemo(() => {
+        const d = new Date();
+        return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+    }, []);
+
+    useEffect(() => {
+        // Get current month's best scores
+        const usersColRef = collection(db, `/artifacts/${appId}/public/data/users`);
+        const unsubscribe = onSnapshot(usersColRef, (querySnapshot) => {
+            const usersData = [];
+            let processedCount = 0;
+            
+            if (querySnapshot.size === 0) {
+                setCurrentMonthUsers([]);
+            setLoading(false);
+                return;
+            }
+            
+            querySnapshot.forEach((userDoc) => {
+                const bestScoreDocRef = doc(db, `/artifacts/${appId}/users/${userDoc.id}/bestScores/${currentMonth}`);
+                getDoc(bestScoreDocRef).then((scoreDoc) => {
+                    processedCount++;
+                    if (scoreDoc.exists()) {
+                        const scoreData = scoreDoc.data();
+                        usersData.push({
+                            userId: userDoc.id,
+                            displayName: scoreData.displayName || `Agent-${userDoc.id.substring(0, 6)}`,
+                            avatarId: scoreData.avatarId || 0,
+                            score: scoreData.score || 0,
+                            time: scoreData.time || 0,
+                            memory: scoreData.memory || 0
+                        });
+                    }
+                    
+                    // When all users have been processed
+                    if (processedCount === querySnapshot.size) {
+                        // Sort by score and take top 10
+                        usersData.sort((a, b) => b.score - a.score);
+                        setCurrentMonthUsers(usersData.slice(0, 10));
+                        setLoading(false);
+                    }
+                });
+            });
+        });
+        return () => unsubscribe();
+    }, [currentMonth]);
+
+    useEffect(() => {
+        // Get monthly winners history
+        const winnersColRef = collection(db, `/artifacts/${appId}/public/data/monthlyWinners`);
+        const unsubscribe = onSnapshot(winnersColRef, (querySnapshot) => {
+            const winnersData = [];
+            querySnapshot.forEach((doc) => {
+                winnersData.push({ id: doc.id, ...doc.data() });
+            });
+            winnersData.sort((a, b) => b.month.localeCompare(a.month));
+            setMonthlyWinners(winnersData);
+        });
+        return () => unsubscribe();
+    }, []);
+
+    if (loading) return <div className="text-center p-8">Accessing records...</div>;
+
+    return (
+        <div className="max-w-6xl mx-auto space-y-6">
+            {/* View Toggle */}
+            <div className="flex justify-center space-x-4">
+                <button 
+                    onClick={() => setView('current')} 
+                    className={`px-4 py-2 rounded-md text-sm font-bold transition-all ${
+                        view === 'current' 
+                            ? 'text-yellow-400 bg-yellow-900/50' 
+                            : 'text-gray-400 hover:text-yellow-400'
+                    }`}
+                >
+                    Leaderboard
+                </button>
+                <button 
+                    onClick={() => setView('history')} 
+                    className={`px-4 py-2 rounded-md text-sm font-bold transition-all ${
+                        view === 'history' 
+                            ? 'text-yellow-400 bg-yellow-900/50' 
+                            : 'text-gray-400 hover:text-yellow-400'
+                    }`}
+                >
+                    Last Month's Winners
+                </button>
+            </div>
+
+            {view === 'current' ? (
+                /* Current Month Leaderboard */
+                <div className="bg-black/30 p-6 rounded-lg shadow-lg border-2 border-yellow-500/50">
+            <h2 className="text-3xl font-bold text-center text-yellow-400 mb-6 flex items-center justify-center space-x-3" style={{ textShadow: '0 0 5px #ff0'}}>
+                        <Trophy className="w-8 h-8"/><span>Leaderboard</span>
+            </h2>
+            <div className="overflow-x-auto">
+                <table className="w-full text-left">
+                            <thead>
+                                <tr className="border-b-2 border-yellow-600/50">
+                                    <th className="p-3 text-sm font-semibold tracking-wide text-center">Rank</th>
+                                    <th className="p-3 text-sm font-semibold tracking-wide">Agent</th>
+                                    <th className="p-3 text-sm font-semibold tracking-wide text-right">Score</th>
+                                </tr>
+                            </thead>
+                    <tbody className="divide-y divide-yellow-800/30">
+                                {currentMonthUsers.map((user, index) => (
+                            <tr key={user.userId} className={`${index < 3 ? 'bg-yellow-900/20' : ''}`}>
+                                        <td className="p-4 text-xl font-bold text-center text-yellow-300">
+                                            {index === 0 ? '🍺' : index === 1 ? '🥈' : index === 2 ? '🥉' : index + 1}
+                                        </td>
+                                <td className="p-4 flex items-center space-x-4">
+                                            <CustomAvatar
+                                                {...getAvatarProperties(user.avatarId)}
+                                                size={48}
+                                            />
+                                            <div>
+                                                <p className="font-bold text-white">{user.displayName}</p>
+                                                <p className="text-xs text-gray-500">ID: {user.userId}</p>
+                                            </div>
+                                </td>
+                                        <td className="p-4 text-lg font-bold text-right text-yellow-400">{user.score}</td>
+                            </tr>
+                        ))}
+                    </tbody>
+                </table>
+                    </div>
+                </div>
+            ) : (
+                /* Last Month's Winners */
+                <div className="bg-black/30 p-6 rounded-lg shadow-lg border-2 border-yellow-500/50">
+                    <h2 className="text-3xl font-bold text-center text-yellow-400 mb-6 flex items-center justify-center space-x-3" style={{ textShadow: '0 0 5px #ff0'}}>
+                        <Trophy className="w-8 h-8"/><span>Last Month's Winners</span>
+                    </h2>
+                    {monthlyWinners.length > 0 ? (
+                        <div className="bg-gray-800/50 p-6 rounded-lg border border-yellow-600/30">
+                            <h3 className="text-xl font-bold text-yellow-400 mb-4 text-center">{monthlyWinners[0].month}</h3>
+                            <div className="space-y-4">
+                                {monthlyWinners[0].winners.map((winner, index) => (
+                                    <div key={winner.userId} className="flex items-center space-x-4">
+                                        <span className="text-2xl">
+                                            {index === 0 ? '🥇' : index === 1 ? '🥈' : '🥉'}
+                                        </span>
+                                        <CustomAvatar
+                                            skinColor={winner.skinColor || 0}
+                                            hairStyle={winner.hairStyle || 0}
+                                            hairColor={winner.hairColor || 0}
+                                            topStyle={winner.topStyle || 0}
+                                            topColor={winner.topColor || 0}
+                                            size={48}
+                                        />
+                                        <div className="flex-1">
+                                            <p className="text-lg font-bold text-white">{winner.displayName}</p>
+                                            <p className="text-sm text-yellow-400">{winner.score} pts</p>
+                                        </div>
+                                    </div>
+                                ))}
+                            </div>
+                        </div>
+                    ) : (
+                        <div className="text-center text-gray-400 py-8">
+                            <p>No previous month's winners found.</p>
+                        </div>
+                    )}
+                </div>
+            )}
+        </div>
+    );
+}
+
+// --- Auth View Component ---
+function AuthView({ authMode, setAuthMode, setShowAuth, setUserData }) {
+    const [email, setEmail] = useState('');
+    const [password, setPassword] = useState('');
+    const [displayName, setDisplayName] = useState('');
+    const [error, setError] = useState('');
+    const [isLoading, setIsLoading] = useState(false);
+    const [resetEmailSent, setResetEmailSent] = useState(false);
+
+    const handleAuth = async (e) => {
+        e.preventDefault();
+        setIsLoading(true);
+        setError('');
+
+        try {
+            if (authMode === 'signup') {
+                // Create new user
+                const userCredential = await createUserWithEmailAndPassword(auth, email, password);
+                const user = userCredential.user;
+                // Ensure auth token is available before firestore write (avoids permission race)
+                try { await user.getIdToken(true); } catch {}
+                
+                // Create user profile in Firestore
+                const userDocRef = doc(db, `/artifacts/${appId}/public/data/users/${user.uid}`);
+                await setDoc(userDocRef, {
+                    userId: user.uid,
+                    displayName: displayName || `Agent-${user.uid.substring(0, 6)}`,
+                    email: email,
+                    totalScore: 0,
+                    skinColor: 0,
+                    hairStyle: 0,
+                    hairColor: 0,
+                    topStyle: 0,
+                    topColor: 0,
+                    createdAt: new Date()
+                }, { merge: true });
+                
+                setUserData({
+                    userId: user.uid,
+                    displayName: displayName || `Agent-${user.uid.substring(0, 6)}`,
+                    email: email,
+                    totalScore: 0,
+                    hairColor: 0,
+                    skinColor: 0,
+                    topColor: 0,
+                    accessory: 0
+                });
+            } else {
+                // Sign in existing user
+                const userCredential = await signInWithEmailAndPassword(auth, email, password);
+                const user = userCredential.user;
+                try { await user.getIdToken(true); } catch {}
+                
+                // Get user data from Firestore
+                const userDocRef = doc(db, `/artifacts/${appId}/public/data/users/${user.uid}`);
+                const userDoc = await getDoc(userDocRef);
+                
+                if (userDoc.exists()) {
+                    setUserData(userDoc.data());
+                } else {
+                    // Create profile if it doesn't exist (fallback)
+                    await setDoc(userDocRef, {
+                        userId: user.uid,
+                        displayName: `Agent-${user.uid.substring(0, 6)}`,
+                        email: email,
+                        totalScore: 0,
+                        hairColor: 0,
+                        skinColor: 0,
+                        topColor: 0,
+                        accessory: 0,
+                        createdAt: new Date()
+                    }, { merge: true });
+                    setUserData({
+                        userId: user.uid,
+                        displayName: `Agent-${user.uid.substring(0, 6)}`,
+                        email: email,
+                        totalScore: 0,
+                        hairColor: 0,
+                        skinColor: 0,
+                        topColor: 0,
+                        accessory: 0
+                    });
+                }
+            }
+            setShowAuth(false);
+        } catch (error) {
+            console.error('Auth error:', error);
+            setError(error.message);
+        } finally {
+            setIsLoading(false);
+        }
+    };
+
+    const handlePasswordReset = async () => {
+        if (!email.trim()) {
+            setError('Please enter your email address first.');
+            return;
+        }
+        try {
+            setIsLoading(true);
+            setError('');
+            await sendPasswordResetEmail(auth, email);
+            setResetEmailSent(true);
+        } catch (error) {
+            console.error('Password reset error:', error);
+            setError(error.message);
+        } finally {
+            setIsLoading(false);
+        }
+    };
+
+    return (
+        <div className="min-h-screen bg-[#1a103c] flex items-center justify-center p-4">
+            <div className="bg-black/30 p-8 rounded-lg shadow-lg border-2 border-cyan-500/50 max-w-md w-full">
+                <div className="text-center mb-8">
+                    <Terminal className="w-16 h-16 text-cyan-400 mx-auto mb-4" />
+                    <h1 className="text-3xl font-bold text-white mb-2" style={{ textShadow: '0 0 5px var(--glow-color-alt)'}}>
+                        Aiimi CoP Wars
+                    </h1>
+                    <p className="text-gray-400">Access the coding grid</p>
+                </div>
+
+                <form onSubmit={handleAuth} className="space-y-6">
+                    {authMode === 'signup' && (
+                        <div>
+                            <label className="block text-sm font-medium text-gray-300 mb-2">
+                                Display Name
+                            </label>
+                            <input
+                                type="text"
+                                value={displayName}
+                                onChange={(e) => setDisplayName(e.target.value)}
+                                className="w-full bg-gray-800 border border-gray-600 rounded-md px-3 py-2 text-white focus:outline-none focus:border-cyan-400"
+                                placeholder="Enter your agent name"
+                            />
+                        </div>
+                    )}
+                    
+                    <div>
+                        <label className="block text-sm font-medium text-gray-300 mb-2">
+                            Email
+                        </label>
+                        <input
+                            type="email"
+                            value={email}
+                            onChange={(e) => setEmail(e.target.value)}
+                            className="w-full bg-gray-800 border border-gray-600 rounded-md px-3 py-2 text-white focus:outline-none focus:border-cyan-400"
+                            placeholder="Enter your email"
+                            required
+                        />
+                    </div>
+                    
+                    <div>
+                        <label className="block text-sm font-medium text-gray-300 mb-2">
+                            Password
+                        </label>
+                        <input
+                            type="password"
+                            value={password}
+                            onChange={(e) => setPassword(e.target.value)}
+                            className="w-full bg-gray-800 border border-gray-600 rounded-md px-3 py-2 text-white focus:outline-none focus:border-cyan-400"
+                            placeholder="Enter your password"
+                            required
+                        />
+                    </div>
+
+                    {error && (
+                        <div className="bg-red-900/50 border border-red-500 text-red-200 p-3 rounded-md text-sm">
+                            {error}
+                        </div>
+                    )}
+
+                    {resetEmailSent && (
+                        <div className="bg-green-900/40 border border-green-600 text-green-200 p-3 rounded-md text-sm">
+                            Password reset email sent to <strong className="text-green-100">{email}</strong>.
+                        </div>
+                    )}
+
+                    <button
+                        type="submit"
+                        disabled={isLoading}
+                        className="w-full bg-cyan-600 text-white font-bold py-3 px-4 rounded-lg hover:bg-cyan-700 transition-all duration-200 disabled:bg-gray-600 disabled:cursor-not-allowed"
+                    >
+                        {isLoading ? 'Processing...' : authMode === 'signup' ? 'Create Account' : 'Sign In'}
+                    </button>
+                </form>
+
+                {authMode === 'signin' && (
+                    <div className="mt-4 text-center">
+                        <button
+                            onClick={handlePasswordReset}
+                            disabled={isLoading}
+                            className="text-cyan-400 hover:text-cyan-300 text-sm font-medium disabled:text-gray-500"
+                        >
+                            Forgot Password?
+                        </button>
+                    </div>
+                )}
+
+                <div className="mt-6 text-center">
+                    <p className="text-gray-400 text-sm">
+                        {authMode === 'signin' ? "Don't have an account? " : "Already have an account? "}
+                        <button
+                            onClick={() => setAuthMode(authMode === 'signin' ? 'signup' : 'signin')}
+                            className="text-cyan-400 hover:text-cyan-300 font-medium"
+                        >
+                            {authMode === 'signin' ? 'Sign Up' : 'Sign In'}
+                        </button>
+                    </p>
+                </div>
+            </div>
+        </div>
+    );
+}
+
+// --- Avatar Modal Component ---
+function AvatarModal({ userData, setShowAvatarModal, setUserData }) {
+    const [displayName, setDisplayName] = useState(userData.displayName || '');
+    const [selectedAvatar, setSelectedAvatar] = useState(userData.avatarId || 0);
+    const [isLoading, setIsLoading] = useState(false);
+    const [error, setError] = useState('');
+
+    // Handle escape key to close modal
+    useEffect(() => {
+        const handleEscape = (e) => {
+            if (e.key === 'Escape') {
+                handleClose();
+            }
+        };
+        document.addEventListener('keydown', handleEscape);
+        return () => document.removeEventListener('keydown', handleEscape);
+    }, []);
+
+    const handleSave = async () => {
+        if (!displayName.trim()) {
+            setError('Display name cannot be empty');
+            return;
+        }
+
+        setIsLoading(true);
+        setError('');
+
+        try {
+            const userDocRef = doc(db, `/artifacts/${appId}/public/data/users/${userData.userId}`);
+            await setDoc(userDocRef, {
+                displayName: displayName.trim(),
+                avatarId: selectedAvatar,
+                updatedAt: new Date()
+            }, { merge: true });
+
+            setUserData({
+                ...userData,
+                displayName: displayName.trim(),
+                avatarId: selectedAvatar
+            });
+
+            setShowAvatarModal(false);
+        } catch (error) {
+            console.error('Failed to update profile:', error);
+            setError('Failed to save changes. Please try again.');
+        } finally {
+            setIsLoading(false);
+        }
+    };
+
+    const handleClose = () => {
+        setShowAvatarModal(false);
+        // Reset form to original values
+        setDisplayName(userData.displayName || '');
+        setSelectedAvatar(userData.avatarId || 0);
+        setError('');
+    };
+
+    // Predefined pixel art avatar configurations
+    const avatarOptions = [
+        { id: 0, skinColor: 0, hairStyle: 0, hairColor: 0, topStyle: 0, topColor: 0 },
+        { id: 1, skinColor: 1, hairStyle: 1, hairColor: 1, topStyle: 1, topColor: 1 },
+        { id: 2, skinColor: 2, hairStyle: 2, hairColor: 2, topStyle: 2, topColor: 2 },
+        { id: 3, skinColor: 3, hairStyle: 3, hairColor: 3, topStyle: 3, topColor: 3 },
+        { id: 4, skinColor: 4, hairStyle: 4, hairColor: 4, topStyle: 4, topColor: 4 },
+        { id: 5, skinColor: 5, hairStyle: 5, hairColor: 5, topStyle: 5, topColor: 5 },
+        { id: 6, skinColor: 6, hairStyle: 6, hairColor: 6, topStyle: 6, topColor: 6 },
+        { id: 7, skinColor: 7, hairStyle: 7, hairColor: 7, topStyle: 7, topColor: 7 }
+    ];
+
+    return (
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4 z-50" onClick={handleClose}>
+            <div className="bg-[#1a103c] border-2 border-cyan-500/50 rounded-lg shadow-lg max-w-2xl w-full" onClick={(e) => e.stopPropagation()}>
+                <div className="p-6">
+                    <div className="flex items-center justify-between mb-6">
+                        <h2 className="text-2xl font-bold text-cyan-400">Choose Your Avatar</h2>
+                        <button
+                            onClick={handleClose}
+                            className="text-gray-400 hover:text-white transition-colors"
+                        >
+                            <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                            </svg>
+                        </button>
+                    </div>
+
+                    <div className="space-y-6">
+                        {/* Display Name */}
+                        <div>
+                            <label className="block text-sm font-medium text-gray-300 mb-2">
+                                Display Name
+                            </label>
+                            <input
+                                type="text"
+                                value={displayName}
+                                onChange={(e) => setDisplayName(e.target.value)}
+                                className="w-full bg-gray-800 border border-gray-600 rounded-md px-3 py-2 text-white focus:outline-none focus:border-cyan-400"
+                                placeholder="Enter your display name"
+                                maxLength={20}
+                            />
+                        </div>
+
+                        {/* Avatar Selection Grid */}
+                        <div>
+                            <label className="block text-sm font-medium text-gray-300 mb-4">
+                                Select Your Avatar
+                            </label>
+                            <div className="grid grid-cols-4 gap-4">
+                                {avatarOptions.map((avatar) => (
+                                    <div
+                                        key={avatar.id}
+                                        onClick={() => setSelectedAvatar(avatar.id)}
+                                        className={`relative cursor-pointer p-4 rounded-lg border-2 transition-all ${
+                                            selectedAvatar === avatar.id
+                                                ? 'border-cyan-400 bg-cyan-900/20'
+                                                : 'border-gray-600 bg-gray-800/50 hover:border-gray-500'
+                                        }`}
+                                    >
+                                        <div className="flex items-center justify-center">
+                                            <CustomAvatar
+                                                skinColor={avatar.skinColor}
+                                                hairStyle={avatar.hairStyle}
+                                                hairColor={avatar.hairColor}
+                                                topStyle={avatar.topStyle}
+                                                topColor={avatar.topColor}
+                                                size={64}
+                                            />
+                                        </div>
+                                        {selectedAvatar === avatar.id && (
+                                            <div className="absolute -top-2 -right-2 w-6 h-6 bg-cyan-400 rounded-full flex items-center justify-center">
+                                                <svg className="w-4 h-4 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                                                </svg>
+                                            </div>
+                                        )}
+                                    </div>
+                                ))}
+                            </div>
+                        </div>
+
+                        {error && (
+                            <div className="bg-red-900/50 border border-red-500 text-red-200 p-3 rounded-md text-sm">
+                                {error}
+                            </div>
+                        )}
+
+                        {/* Action Buttons */}
+                        <div className="flex space-x-3">
+                            <button
+                                onClick={handleClose}
+                                className="flex-1 px-4 py-2 text-sm font-bold text-gray-300 hover:bg-gray-700 transition-all rounded border border-gray-600"
+                            >
+                                Cancel
+                            </button>
+                            <button
+                                onClick={handleSave}
+                                disabled={isLoading}
+                                className="flex-1 px-4 py-2 text-sm font-bold text-white bg-cyan-600 hover:bg-cyan-700 transition-all rounded disabled:bg-gray-600 disabled:cursor-not-allowed"
+                            >
+                                {isLoading ? 'Saving...' : 'Save Changes'}
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    );
+}
+
+// --- Footer Component ---
+function Footer() {
+    return (
+        <footer className="text-center py-6 mt-12 text-gray-500 text-sm">
+            <p>Aiimi CoP Wars</p>
+        </footer>
+    );
+}

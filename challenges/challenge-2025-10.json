@@ -1,0 +1,43 @@
+{
+  "title": "Jon's Final Goodbye",
+  "description": "The Story\n\nIt's a strange day at Aiimi. Our colleague Jon has left for what he claims is a \"better job\" at a different company. We're not bitter, but we did find a parting \"gift\" from him. Before he left, Jon was working on our new automatic task prioritisation engine. In his final commit, he replaced all the core logic with a single comment: // Data CoP Sucks.\n\nJake, is now tasked with rebuilding the logic from scratch. However, Jake isnt very good at coding so he needs your help to write a program that can correctly calculate task priority based on a set of business rules. \n\nYour Task\n\nWrite a function that accepts a list of strings, where each string represents a task. Your function should process these tasks, calculate a \"priority score\" for each one based on the rules below, and return a list of the task IDs, sorted in descending order of their score.\n\nTask String Format\n\nEach task is a comma-separated string with three parts: id, type, and urgency.\nExample: \"id:A-1,type:bug,urgency:high\"\n\nPriority Scoring Rules\n\nBase Score: Determined by urgency:\n- high: 100 points\n- medium: 50 points\n- low: 10 points\n\nType Multiplier: The base score is then multiplied by a value based on the type:\n- bug: 2x\n- feature: 1.5x\n- chore: 1x\n\nID Bonus: If the id string contains any numbers, add the value of the first number found in the ID to the score.\n- id:PROJ-45 would get a bonus of 45 points.\n- id:TICKET-9-FEATURE would get a bonus of 9 points.\n- id:ALPHA would get a bonus of 0 points.\n\nConstraints\n\nThe input will be a list of up to 5 task strings.\nThe function must be case-sensitive for type and urgency values.\nIf two tasks have the same score, their relative order should be determined by their original id in alphabetical (lexicographical) order.\n\nExample:\nInput: [\"id:BUG-25,type:bug,urgency:high\", \"id:FEAT-10,type:feature,urgency:medium\", \"id:CHORE-5,type:chore,urgency:low\"]\nExpected: [\"BUG-25\", \"FEAT-10\", \"CHORE-5\"]\nScores: BUG-25 (225), FEAT-10 (85), CHORE-5 (15)",
+  "testCases": [
+    {
+      "name": "Standard Case",
+      "input": "[\"id:BUG-25,type:bug,urgency:high\", \"id:FEAT-10,type:feature,urgency:medium\", \"id:CHORE-5,type:chore,urgency:low\"]",
+      "expectedOutput": "[\"BUG-25\", \"FEAT-10\", \"CHORE-5\"]"
+    },
+    {
+      "name": "Tie-Breaker Case",
+      "input": "[\"id:B-TASK,type:chore,urgency:high\", \"id:A-TASK,type:bug,urgency:medium\"]",
+      "expectedOutput": "[\"A-TASK\", \"B-TASK\"]"
+    },
+    {
+      "name": "Mixed Priorities",
+      "input": "[\"id:FIX-99,type:bug,urgency:low\", \"id:DEPLOY,type:chore,urgency:high\", \"id:ADD-3,type:feature,urgency:medium\"]",
+      "expectedOutput": "[\"FIX-99\", \"DEPLOY\", \"ADD-3\"]"
+    },
+    {
+      "name": "No ID Bonus",
+      "input": "[\"id:ALPHA,type:bug,urgency:high\", \"id:BETA,type:feature,urgency:high\"]",
+      "expectedOutput": "[\"ALPHA\", \"BETA\"]"
+    },
+    {
+      "name": "Single Task",
+      "input": "[\"id:TASK-1,type:chore,urgency:medium\"]",
+      "expectedOutput": "[\"TASK-1\"]"
+    }
+  ],
+  "starterCode": {
+    "python": "",
+    "java": "",
+    "c++": "",
+    "csharp": "",
+    "sql": ""
+  },
+  "difficulty": "Medium",
+  "timeLimit": 5,
+  "memoryLimit": 128000,
+  "createdAt": "2025-08-27T10:42:15.996671Z",
+  "active": true
+}

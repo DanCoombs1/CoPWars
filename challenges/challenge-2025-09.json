@@ -1,0 +1,43 @@
+{
+  "title": "First Missing Positive",
+  "description": "Problem Statement\n\nGiven an unsorted integer array nums. Return the smallest positive integer that is not present in nums.\n\nYou must implement an algorithm that runs in O(n) time and uses O(1) auxiliary space.\n\nConstraints:\n- 1 <= nums.length <= 10^5\n- -2^31 <= nums[i] <= 2^31 - 1\n\nExamples:\n- Input: nums = [1,2,0], Output: 3\n- Input: nums = [3,4,-1,1], Output: 2  \n- Input: nums = [7,8,9,11,12], Output: 1",
+  "testCases": [
+    {
+      "name": "Example 1",
+      "input": "[1,2,0]",
+      "expectedOutput": "3"
+    },
+    {
+      "name": "Example 2",
+      "input": "[3,4,-1,1]",
+      "expectedOutput": "2"
+    },
+    {
+      "name": "Example 3",
+      "input": "[7,8,9,11,12]",
+      "expectedOutput": "1"
+    },
+    {
+      "name": "All negatives",
+      "input": "[-1,-2,-3]",
+      "expectedOutput": "1"
+    },
+    {
+      "name": "Large consecutive",
+      "input": "[1,2,3,4,5]",
+      "expectedOutput": "6"
+    }
+  ],
+  "starterCode": {
+    "python": "class Solution(object):\n    def firstMissingPositive(self, nums):\n        \"\"\"\n        :type nums: List[int]\n        :rtype: int\n        \"\"\"\n        # Your algorithm here\n        pass\n\n# Test your solution\nsol = Solution()\nnums = [1,2,0]\nresult = sol.firstMissingPositive(nums)\nprint(result)",
+    "java": "class Solution {\n    public int firstMissingPositive(int[] nums) {\n        // Your algorithm here\n        return 1;\n    }\n}",
+    "c++": "#include <vector>\nusing namespace std;\n\nclass Solution {\npublic:\n    int firstMissingPositive(vector<int>& nums) {\n        // Your algorithm here\n        return 1;\n    }\n};",
+    "csharp": "public class Solution {\n    public int FirstMissingPositive(int[] nums) {\n        // Your algorithm here\n        return 1;\n    }\n}",
+    "sql": "-- This problem is not applicable in SQL"
+  },
+  "difficulty": "Medium",
+  "timeLimit": 5,
+  "memoryLimit": 128000,
+  "createdAt": "2025-09-01T09:29:46.777808Z",
+  "active": true
+}

@@ -1,0 +1,92 @@
+#root {
+  max-width: 1280px;
+  margin: 0 auto;
+  padding: 2rem;
+  text-align: center;
+}
+
+.logo {
+  height: 6em;
+  padding: 1.5em;
+  will-change: filter;
+  transition: filter 300ms;
+}
+.logo:hover {
+  filter: drop-shadow(0 0 2em #646cffaa);
+}
+.logo.react:hover {
+  filter: drop-shadow(0 0 2em #61dafbaa);
+}
+
+@keyframes logo-spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  a:nth-of-type(2) .logo {
+    animation: logo-spin infinite 20s linear;
+  }
+}
+
+.card {
+  padding: 2em;
+}
+
+.read-the-docs {
+  color: #888;
+}
+
+/* Code Editor Enhancements */
+.code-editor {
+  background: linear-gradient(135deg, #1e1e1e 0%, #2d2d2d 100%) !important;
+  box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.3) !important;
+  color: #ffffff !important;
+  background-color: #1e1e1e !important;
+}
+
+.code-editor:focus {
+  box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.3), 0 0 0 2px rgba(0, 255, 255, 0.2) !important;
+  background: linear-gradient(135deg, #1e1e1e 0%, #2d2d2d 100%) !important;
+  background-color: #1e1e1e !important;
+}
+
+.code-editor::placeholder {
+  color: #888888 !important;
+}
+
+/* Line numbers */
+.line-numbers {
+  background: linear-gradient(180deg, #2d2d2d 0%, #1e1e1e 100%);
+  border-right: 1px solid #404040;
+}
+
+/* Syntax highlighting colors */
+.syntax-keyword { color: #569cd6; }
+.syntax-string { color: #ce9178; }
+.syntax-comment { color: #6a9955; }
+.syntax-number { color: #b5cea8; }
+.syntax-function { color: #dcdcaa; }
+
+/* IDE Header styling */
+.ide-header {
+  background: linear-gradient(135deg, #2d2d2d 0%, #1e1e1e 100%);
+  border-bottom: 1px solid #404040;
+}
+
+/* Terminal-style buttons */
+.terminal-button {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  border: 1px solid rgba(0, 0, 0, 0.3);
+  box-shadow: inset 0 1px 2px rgba(255, 255, 255, 0.1);
+}
+
+.terminal-button.red { background: #ff5f56; }
+.terminal-button.yellow { background: #ffbd2e; }
+.terminal-button.green { background: #27ca3f; }
