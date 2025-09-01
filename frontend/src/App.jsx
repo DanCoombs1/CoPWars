@@ -531,7 +531,7 @@ function ChallengeView({ userId }) {
 
         try {
             // Use our backend instead of calling Judge0 directly
-            const response = await fetch('http://localhost:8000/execute', {
+            const response = await fetch('https://copwars-backend.onrender.com/execute', {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
@@ -595,7 +595,7 @@ function ChallengeView({ userId }) {
 
         try {
             // Use our backend for console runs too (empty test cases)
-            const response = await fetch('http://localhost:8000/execute', {
+            const response = await fetch('https://copwars-backend.onrender.com/execute', {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
