@@ -50,14 +50,12 @@ const decodeBase64 = (b64) => {
 // Function to get starter code for each language
 const getStarterCode = (language) => {
     const starterCodes = {
-        javascript: `// JavaScript SudokuSolver
-function SudokuSolver() {
-    // Your code here
-    
-}
-
-// Example usage
-console.log(SudokuSolver());`,
+        javascript: `class Solution {
+    firstMissingPositive(nums) {
+        // Your algorithm here
+        return 1;
+    }
+}`,
 
         python: `class Solution(object):
     def firstMissingPositive(self, nums):
